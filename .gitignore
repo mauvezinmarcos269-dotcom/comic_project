@@ -1,0 +1,25 @@
+﻿# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 日志文件
+*.log
+logs/
+data/logs/
+
+# 配置文件（如果包含敏感信息）
+# .env
+# config_local.py
+
+# IDE配置（可选，如果你想保留.vscode设置就删除下面这行）
+# .vscode/
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+
+# Excel临时文件
+~$*.xlsx
