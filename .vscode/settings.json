@@ -1,4 +1,44 @@
 {
+    // ==========================================
+    // Python 环境配置
+    // ==========================================
+    "python.defaultInterpreterPath": "C:\\\\Users\\\\35165\\\\anaconda3\\\\envs\\\\comic_env\\\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    
+    // ==========================================
+    // Conda 环境管理
+    // ==========================================
     "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    
+    // ==========================================
+    // 终端配置
+    // ==========================================
+    "python.terminal.executeInFileDir": false,
+    "terminal.integrated.cwd": "${workspaceFolder}",
+    
+    // ==========================================
+    // Python 分析路径（用于模块导入提示）
+    // ==========================================
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/core",
+        "${workspaceFolder}/core/collectors",
+        "${workspaceFolder}/core/features",
+        "${workspaceFolder}/core/agent",
+        "${workspaceFolder}/core/utils"
+    ],
+    
+    // ==========================================
+    // 自动补全和类型检查
+    // ==========================================
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    
+    // ==========================================
+    // 测试配置
+    // ==========================================
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": false
 }
