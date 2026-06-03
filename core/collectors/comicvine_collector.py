@@ -9,6 +9,9 @@ cache = ComicCache()
 
 def fetch_volume_creators(volume_detail_url):
     """Issue 级创作者缺失时的 Volume 级主创降级爬取机制"""
+    if not COMICVINE_API_KEY:
+        logger.warning("ComicVine API key is not configured; skipping volume creator fetch")
+        return [], []
     if not volume_detail_url:
         return [], []
     try:
@@ -54,6 +57,10 @@ def fetch_comicvine_data(title, issue, release_year=None):
         }
 
     # 2. 检查高速缓存
+    if not COMICVINE_API_KEY:
+        logger.warning("ComicVine API key is not configured; skipping remote fetch")
+        return None
+
     cached = cache.get(title, issue, release_year)
     if cached:
         logger.info(f"缓存命中: {title} #{issue}")

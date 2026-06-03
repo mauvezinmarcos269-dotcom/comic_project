@@ -7,7 +7,7 @@ load_dotenv()
 CORE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_ROOT.parent
 
-COMICVINE_API_KEY = os.getenv("COMICVINE_API_KEY", "a610d7acad28d37c0a77e0ef1107cf5ac35fb17e")
+COMICVINE_API_KEY = (os.getenv("COMICVINE_API_KEY") or "").strip()
 
 MAX_CONCURRENT_REQUESTS = 2 
 REQUEST_TIMEOUT = 30

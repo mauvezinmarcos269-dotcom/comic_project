@@ -8,6 +8,9 @@ COLUMN_ALIASES = {
     "sales": "Unit Sales", "Unit_Sales": "Unit Sales",
     "release_year": "Release Year", "Release_Year": "Release Year"
 }
+NORMALIZED_COLUMN_ALIASES = {
+    str(key).strip().lower(): value for key, value in COLUMN_ALIASES.items()
+}
 
 KNOWN_CORRECTIONS = {
     ("detective comics", "1000"): {
@@ -22,17 +25,22 @@ KNOWN_CORRECTIONS = {
 }
 
 # AI-assisted: 由 AI 辅助优化了字段标准化逻辑，修正了 .str.contains 的模糊匹配调用 [cite: 63, 64]
+def clean_text(value, default=""):
+    if pd.isna(value):
+        return default
+    return str(value).strip()
+
 def load_and_clean_comic_data(file_path=None):
     file_path = file_path or (ENRICHED_DATA_FILE if ENRICHED_DATA_FILE.exists() else DEFAULT_DATA_FILE)
     
     df = pd.read_excel(file_path) if str(file_path).endswith('.xlsx') else pd.read_csv(file_path)
     # 统一列名映射
-    df = df.rename(columns=lambda x: COLUMN_ALIASES.get(x.lower(), x))
+    df = df.rename(columns=lambda x: NORMALIZED_COLUMN_ALIASES.get(clean_text(x).lower(), x))
     df = df.rename(columns=COLUMN_ALIASES)
 
-    df["Title"] = df["Title"].astype(str).str.strip()
-    df["Issue"] = df["Issue"].astype(str).str.strip() if "Issue" in df.columns else "1"
-    df["Studio/Pub"] = df["Studio/Pub"].fillna("Independent").astype(str).str.strip()
+    df["Title"] = df["Title"].map(clean_text)
+    df["Issue"] = df["Issue"].map(lambda value: clean_text(value, "1")) if "Issue" in df.columns else "1"
+    df["Studio/Pub"] = df["Studio/Pub"].map(lambda value: clean_text(value, "Independent"))
 
     df["Unit Sales"] = pd.to_numeric(df["Unit Sales"], errors="coerce").fillna(0).astype(int)
     df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0.0).astype(float)
@@ -51,13 +59,16 @@ def load_and_clean_comic_data(file_path=None):
         if col not in df.columns:
             df[col] = "Not Enriched"
         else:
-            df[col] = df[col].astype(str).str.strip()
-            mask = df[col].str.lower().isin(invalid_strs) | df[col].isna()
+            missing_mask = df[col].isna()
+            df[col] = df[col].map(clean_text)
+            normalized = df[col].map(lambda value: clean_text(value).lower())
+            mask = normalized.isin(invalid_strs) | missing_mask
             df.loc[mask, col] = "Not Available"
 
     for (title, issue), corrections in KNOWN_CORRECTIONS.items():
+        normalized_title = df["Title"].map(lambda value: clean_text(value).lower())
         mask = (
-            df['Title'].str.lower().str.contains(title.lower(), na=False, regex=False) & 
+            normalized_title.str.contains(clean_text(title).lower(), na=False, regex=False) & 
             (df['Issue'] == str(issue))
         )
         for col, value in corrections.items():

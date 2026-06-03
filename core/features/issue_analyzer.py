@@ -1,7 +1,7 @@
 def issue_bucket(issue_str):
     try:
         num = int(issue_str)
-    except:
+    except (TypeError, ValueError):
         return "Unknown"
     if num == 1:
         return "#1"
