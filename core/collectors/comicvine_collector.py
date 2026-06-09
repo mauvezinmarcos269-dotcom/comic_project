@@ -1,29 +1,22 @@
 import time
-from core.config import COMICVINE_API_KEY, HEADERS, REQUEST_TIMEOUT
+from core.config import COMICVINE_API_KEY, HEADERS, REQUEST_TIMEOUT, REQUEST_DELAY, TITLE_TRANSLATIONS, KNOWN_CORRECTIONS
 from core.utils.retry_handler import retry_request
 from core.utils.cache_manager import ComicCache
 from core.utils.logger import logger
-from data_cleaner import KNOWN_CORRECTIONS 
 
 cache = ComicCache()
 
 def fetch_volume_creators(volume_detail_url):
-    """Issue 级创作者缺失时的 Volume 级主创降级爬取机制"""
-    if not COMICVINE_API_KEY:
-        logger.warning("ComicVine API key is not configured; skipping volume creator fetch")
-        return [], []
-    if not volume_detail_url:
+    if not COMICVINE_API_KEY or not volume_detail_url:
         return [], []
     try:
-        url = f"{volume_detail_url}?api_key={COMICVINE_API_KEY}&format=json"
-        v_data = retry_request(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        params = {"api_key": COMICVINE_API_KEY, "format": "json"}
+        v_data = retry_request(volume_detail_url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         if not v_data or "results" not in v_data:
             return [], []
         
-        results = v_data["results"]
         w_names, a_names = [], []
-        
-        for person in results.get("person_credits", []):
+        for person in v_data["results"].get("person_credits", []):
             role = person.get("role", "").lower()
             name = person.get("name", "")
             if "writer" in role:
@@ -32,121 +25,112 @@ def fetch_volume_creators(volume_detail_url):
                 a_names.append(name)
         return w_names, a_names
     except Exception as e:
-        logger.error(f"Volume 追溯降级数据补全失败: {e}")
+        logger.error(f"Volume 降级失败: {e}")
         return [], []
 
+
 def fetch_comicvine_data(title, issue, release_year=None):
-    """从 ComicVine 获取漫画数据，支持智能本地修正、向上容错追溯与高速缓存"""
     clean_title = str(title).strip().lower()
     clean_issue = str(issue).strip()
 
-    # 1. 检查本地已知修正库 (包含匹配映射，提前短路，避免触发远程网络请求)
-    matched_correction = None
+    # 1. 本地修正短路（最快路径）
     for (k_title, k_issue), value in KNOWN_CORRECTIONS.items():
-        if k_title in clean_title and k_issue == clean_issue:
-            matched_correction = value
-            break
+        if k_title in clean_title and str(k_issue) == clean_issue:
+            logger.info(f"本地修正命中: {title} #{issue}")
+            value = value.copy()
+            value.update({"Writer_Source": "LocalCorrection", "Artist_Source": "LocalCorrection"})
+            return value
 
-    if matched_correction:
-        logger.info(f"优先命中本地已知修正数据库: {title} #{issue}")
-        return {
-            "Writer": matched_correction.get("Writer", "Unknown"),
-            "Artist": matched_correction.get("Artist", "Unknown"),
-            "Main_Character": matched_correction.get("Main_Character", "Unknown"),
-            "Franchise": matched_correction.get("Franchise", "Unknown")
-        }
-
-    # 2. 检查高速缓存
-    if not COMICVINE_API_KEY:
-        logger.warning("ComicVine API key is not configured; skipping remote fetch")
-        return None
-
+    # 2. 缓存
     cached = cache.get(title, issue, release_year)
     if cached:
         logger.info(f"缓存命中: {title} #{issue}")
         return cached
 
-    # 3. 检索 Issue
-    search_url = f"https://comicvine.gamespot.com/api/search/?api_key={COMICVINE_API_KEY}&format=json&resources=issue&query={title}"
-    logger.info(f"搜索 API: {title} #{issue}")
-    data = retry_request(search_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    
-    if not data or data.get("number_of_total_results", 0) == 0:
-        logger.warning(f"API 未检索到实体结果: {title} #{issue}")
-        return None
+    # 3. 标题翻译
+    api_query_title = clean_title
+    for cn_name, en_name in TITLE_TRANSLATIONS.items():
+        if cn_name in clean_title:
+            api_query_title = api_query_title.replace(cn_name, en_name.lower()).strip()
+            break
 
-    # 4. 精确匹配刊号和关联加权
-    candidates = []
-    for item in data.get("results", []):
-        api_issue = str(item.get("issue_number", "")).strip()
-        if api_issue != clean_issue:
-            continue
-        
-        score = 0
-        volume = item.get("volume", {})
-        volume_name = volume.get("name", "")
-        
-        if clean_title in volume_name.lower():
-            score += 10
-        if release_year:
-            cover_date = item.get("cover_date", "")
-            if str(release_year) in cover_date:
-                score += 20
-        candidates.append((score, item))
-    
-    if not candidates:
-        logger.warning(f"刊号未能与 API 列表对齐: {title} #{issue}")
-        return None
-    
-    best = max(candidates, key=lambda x: x[0])[1]
-    detail_url = best.get("api_detail_url", "")
-    if not detail_url:
-        return None
-    
-    detail_url = f"{detail_url}?api_key={COMICVINE_API_KEY}&format=json"
-    detail = retry_request(detail_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    if not detail or "results" not in detail:
-        return None
-    
-    result = detail["results"]
-    writer_names = []
-    artist_names = []
-    
-    # 5. 解析制作者
-    for person in result.get("person_credits", []):
-        role = person.get("role", "").lower()
-        name = person.get("name", "")
-        if "writer" in role:
-            writer_names.append(name)
-        if any(r in role for r in ["artist", "penciler", "inker"]):
-            artist_names.append(name)
+    out = None
+
+    # 4. ComicVine API（带最小延迟）
+    if COMICVINE_API_KEY:
+        try:
+            search_url = "https://comicvine.gamespot.com/api/search/"
+            params = {
+                "api_key": COMICVINE_API_KEY,
+                "format": "json",
+                "resources": "issue",
+                "query": api_query_title
+            }
+            data = retry_request(search_url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
             
-    # 若发现 Issue 级别的团队为空，执行智能兜底：向父级 Volume 获取
-    if not writer_names or not artist_names:
-        v_url = result.get("volume", {}).get("api_detail_url")
-        if v_url:
-            logger.info(f"期刊制作名单空缺，启动 Volume 降级补全机制：{title}")
-            v_writers, v_artists = fetch_volume_creators(v_url)
-            if not writer_names: writer_names = v_writers
-            if not artist_names: artist_names = v_artists
+            if data and data.get("number_of_total_results", 0) > 0:
+                candidates = []
+                for item in data.get("results", []):
+                    if str(item.get("issue_number", "")).strip() != clean_issue:
+                        continue
+                    score = 10 if api_query_title in item.get("volume", {}).get("name", "").lower() else 0
+                    if release_year and str(release_year) in item.get("cover_date", ""):
+                        score += 20
+                    candidates.append((score, item))
+                
+                if candidates:
+                    best = max(candidates, key=lambda x: x[0])[1]
+                    detail_url = best.get("api_detail_url", "")
+                    if detail_url:
+                        detail = retry_request(f"{detail_url}?api_key={COMICVINE_API_KEY}&format=json", 
+                                             headers=HEADERS, timeout=REQUEST_TIMEOUT)
+                        
+                        if detail and "results" in detail:
+                            result = detail["results"]
+                            writer_names = [p.get("name","") for p in result.get("person_credits", []) if "writer" in p.get("role","").lower()]
+                            artist_names = [p.get("name","") for p in result.get("person_credits", []) 
+                                          if any(r in p.get("role","").lower() for r in ["artist","penciler","inker"])]
+                            
+                            if not writer_names or not artist_names:
+                                v_url = result.get("volume", {}).get("api_detail_url")
+                                if v_url:
+                                    v_w, v_a = fetch_volume_creators(v_url)
+                                    writer_names = writer_names or v_w
+                                    artist_names = artist_names or v_a
 
-    # 6. 提取前三个主要出场角色
-    characters = []
-    for char in result.get("character_credits", [])[:3]:
-        char_name = char.get("name", "")
-        if char_name:
-            characters.append(char_name)
-    
-    volume = result.get("volume", {})
-    franchise = volume.get("name", "Unknown")
-    
-    out = {
-        "Writer": "; ".join(writer_names) if writer_names else "Unknown",
-        "Artist": "; ".join(artist_names) if artist_names else "Unknown",
-        "Main_Character": characters[0] if characters else "Unknown",
-        "Franchise": franchise
+                            chars = [c.get("name","") for c in result.get("character_credits", [])[:3] if c.get("name")]
+                            out = {
+                                "Writer": "; ".join(writer_names) if writer_names else "Unknown",
+                                "Artist": "; ".join(artist_names) if artist_names else "Unknown",
+                                "Main_Character": chars[0] if chars else "Unknown",
+                                "Franchise": result.get("volume", {}).get("name", "Unknown"),
+                                "Writer_Source": "ComicVine" if writer_names else "Unknown",
+                                "Artist_Source": "ComicVine" if artist_names else "Unknown"
+                            }
+        except Exception as e:
+            logger.error(f"ComicVine 异常: {e}")
+
+    # 5. GCD 补偿
+    if not out or out.get("Writer") == "Unknown" or out.get("Artist") == "Unknown":
+        try:
+            from core.collectors.gcd_collector import fetch_gcd_data
+            gcd_res = fetch_gcd_data(api_query_title, clean_issue)
+            if gcd_res:
+                if not out:
+                    out = {"Main_Character": "Unknown", "Franchise": gcd_res.get("Franchise", api_query_title)}
+                if out.get("Writer") == "Unknown" and gcd_res.get("Writer") != "Unknown":
+                    out["Writer"] = gcd_res["Writer"]
+                    out["Writer_Source"] = "GCD"
+                if out.get("Artist") == "Unknown" and gcd_res.get("Artist") != "Unknown":
+                    out["Artist"] = gcd_res["Artist"]
+                    out["Artist_Source"] = "GCD"
+        except Exception as e:
+            logger.error(f"GCD 补偿异常: {e}")
+
+    out = out or {
+        "Writer": "Unknown", "Artist": "Unknown", "Main_Character": "Unknown",
+        "Franchise": api_query_title, "Writer_Source": "Unknown", "Artist_Source": "Unknown"
     }
     
-    logger.info(f"API 解析成功: {title} #{issue} -> Writer: {out['Writer'][:20]}")
     cache.set(title, issue, release_year, out)
     return out

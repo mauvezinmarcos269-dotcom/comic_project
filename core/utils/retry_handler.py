@@ -4,7 +4,6 @@ from core.config import RETRY_TIMES, REQUEST_TIMEOUT, REQUEST_DELAY
 from core.utils.logger import logger
 
 def retry_request(url, headers=None, params=None, timeout=None):
-    """标准的指数回避策略与稳健网络请求重试函数"""
     if timeout is None:
         timeout = REQUEST_TIMEOUT
     
