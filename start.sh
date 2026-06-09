@@ -6,4 +6,4 @@ if [ ! -f "venv/bin/activate" ]; then
 fi
 
 source venv/bin/activate
-streamlit run main.py
+streamlit run app.py

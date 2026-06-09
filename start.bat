@@ -10,5 +10,5 @@ if not exist "venv\Scripts\activate" (
 )
 
 call venv\Scripts\activate
-streamlit run main.py
+streamlit run app.py
 pause
