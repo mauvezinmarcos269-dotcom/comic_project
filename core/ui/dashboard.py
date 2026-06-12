@@ -8,7 +8,7 @@ from core.visualization.charts import (
 from core.features.advanced_analytics import perform_pca_clustering, extract_title_keywords, perform_regression
 from core.ui.export_utils import generate_dashboard_pdf, REPORTLAB_AVAILABLE
 
-# 缓存机制保持不变
+# 缓存机制
 @st.cache_data
 def get_pca_cached(df):
     return perform_pca_clustering(df, 4)
@@ -22,15 +22,39 @@ def get_regression_summary(df):
     _, summary = perform_regression(df)
     return summary
 
-def get_top_entity(d, col):
-    if col not in d.columns or d.empty: return "N/A", 0
-    s = d.groupby(col)["Unit Sales"].sum().sort_values(ascending=False)
-    if len(s) == 0: return "N/A", 0
+# 定义所有在清洗阶段写入的占位符，统一在此过滤
+_INVALID_VALUES = {"not available", "not enriched", "unknown", "none", "nan", "n/a", ""}
+
+def get_top_entity(d: pd.DataFrame, col: str):
+    """返回指定列销量最高的有效实体名及其总销量，自动跳过无效的占位符值。"""
+    if col not in d.columns or d.empty: 
+        return "N/A", 0
+        
+    # 过滤掉所有的占位符行，只保留真实数据
+    valid_mask = ~d[col].astype(str).str.strip().str.lower().isin(_INVALID_VALUES)
+    valid_d = d[valid_mask].copy()
+    
+    if valid_d.empty or "Unit Sales" not in valid_d.columns: 
+        return "N/A", 0
+        
+    s = valid_d.groupby(col)["Unit Sales"].sum().sort_values(ascending=False)
+    
+    if s.empty: 
+        return "N/A", 0
+        
     return s.index[0], int(s.iloc[0])
+
+def _best_char(d: pd.DataFrame):
+    """获取销量最高的角色：优先使用富化后的 Main_Character，若无有效值则回退到 Character 列。"""
+    for col in ("Main_Character", "Character"):
+        name, sales = get_top_entity(d, col)
+        if name != "N/A":
+            return name, sales
+    return "N/A", 0
 
 def render_dashboard(filtered_df, has_enriched):
     pub_name, _ = get_top_entity(filtered_df, "Studio/Pub")
-    char_name, _ = get_top_entity(filtered_df, "Main_Character" if "Main_Character" in filtered_df.columns else "Character")
+    char_name, _ = _best_char(filtered_df)  # 角色获取函数
     writer_name, _ = get_top_entity(filtered_df, "Writer")
     
     avg_sales = filtered_df["Unit Sales"].mean() if len(filtered_df) else 0
