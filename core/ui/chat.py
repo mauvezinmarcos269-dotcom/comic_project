@@ -1,4 +1,5 @@
 import streamlit as st
+import uuid
 from core.agent.llm_router import ask_with_llm_router
 from core.ui.export_utils import generate_chat_pdf, REPORTLAB_AVAILABLE
 
@@ -8,6 +9,7 @@ def init_chat():
             "role": "assistant",
             "content": "欢迎使用美漫销量智能分析平台 👋\n\n你可以问我：\n- 漫威和DC在过去十年谁更具统治力？\n- 帮我找出销量前20的明星编剧",
             "chart": None,
+            "chart_key": None,  # 新增：持久化图表唯一标识
             "evidence": None
         }]
 
@@ -20,19 +22,12 @@ def render_chat(filtered_df, api_key, model_name):
             del st.session_state.messages
             st.rerun()
 
-    # 使用 enumerate 为历史记录组件分配独一无二的 key
-    for idx, msg in enumerate(st.session_state.messages):
+    # 1. 历史渲染：直接读取当时分配好的稳定 UUID
+    for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            
-            # 严谨的 is not None 判断，防范 ValueError
             if msg.get("chart") is not None: 
-                st.plotly_chart(
-                    msg["chart"], 
-                    use_container_width=True, 
-                    key=f"history_chart_{idx}"
-                )
-                
+                st.plotly_chart(msg["chart"], use_container_width=True, key=msg.get("chart_key"))
             if msg.get("evidence") is not None: 
                 st.dataframe(msg["evidence"], use_container_width=True)
 
@@ -41,8 +36,14 @@ def render_chat(filtered_df, api_key, model_name):
         if not api_key:
             st.warning("请先在左侧边栏配置您的 API Key")
         else:
-            # 追加用户消息
-            st.session_state.messages.append({"role":"user", "content":user_query, "chart":None, "evidence":None})
+            # 写入用户提问
+            st.session_state.messages.append({
+                "role": "user", 
+                "content": user_query, 
+                "chart": None, 
+                "chart_key": None, 
+                "evidence": None
+            })
             with st.chat_message("user"): 
                 st.markdown(user_query)
             
@@ -55,30 +56,39 @@ def render_chat(filtered_df, api_key, model_name):
                         chart = getattr(result, "chart", None)
                         evidence = getattr(result, "evidence", None)
                         
-                        st.markdown(answer)
-                        
-                        # 为当前最新生成的图表分配独立 key，基于当前对话的总长度
-                        current_msg_index = len(st.session_state.messages)
-                        
-                        if chart is not None: 
-                            st.plotly_chart(
-                                chart, 
-                                use_container_width=True, 
-                                key=f"current_chart_{current_msg_index}"
-                            )
+                        # 优化点 1：控制 DataFrame 体积，防止 session_state 内存溢出
+                        if evidence is not None:
+                            evidence = evidence.head(100)
                             
+                        # 优化点 2：为图表生成终生唯一的 UUID，避免缓存清空后的 ID 碰撞
+                        current_chart_key = f"chart_{uuid.uuid4().hex}" if chart is not None else None
+                        
+                        st.markdown(answer)
+                        if chart is not None: 
+                            st.plotly_chart(chart, use_container_width=True, key=current_chart_key)
                         if evidence is not None: 
                             st.dataframe(evidence, use_container_width=True)
                         
-                        # 追加 AI 回复记录
+                        # 将带有固定 key 的结果写入历史
                         st.session_state.messages.append({
-                            "role":"assistant", 
-                            "content":answer, 
-                            "chart":chart, 
-                            "evidence":evidence
+                            "role": "assistant", 
+                            "content": answer, 
+                            "chart": chart, 
+                            "chart_key": current_chart_key,
+                            "evidence": evidence
                         })
+                        
                     except Exception as e:
-                        st.error(f"分析调度失败: {e}")
+                        # 优化点 3：捕获异常并作为 assistant 的回复写入历史，防止上下文断裂
+                        err_msg = f"分析调度失败: {e}"
+                        st.error(err_msg)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": err_msg,
+                            "chart": None,
+                            "chart_key": None,
+                            "evidence": None
+                        })
 
     st.divider()
     
