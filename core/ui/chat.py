@@ -20,19 +20,31 @@ def render_chat(filtered_df, api_key, model_name):
             del st.session_state.messages
             st.rerun()
 
-    for msg in st.session_state.messages:
+    # 使用 enumerate 为历史记录组件分配独一无二的 key
+    for idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            if msg.get("chart") is not None: st.plotly_chart(msg["chart"], use_container_width=True)
-            if msg.get("evidence") is not None: st.dataframe(msg["evidence"], use_container_width=True)
+            
+            # 严谨的 is not None 判断，防范 ValueError
+            if msg.get("chart") is not None: 
+                st.plotly_chart(
+                    msg["chart"], 
+                    use_container_width=True, 
+                    key=f"history_chart_{idx}"
+                )
+                
+            if msg.get("evidence") is not None: 
+                st.dataframe(msg["evidence"], use_container_width=True)
 
     user_query = st.chat_input("向 AI 发起深度数智对话...")
     if user_query:
         if not api_key:
             st.warning("请先在左侧边栏配置您的 API Key")
         else:
+            # 追加用户消息
             st.session_state.messages.append({"role":"user", "content":user_query, "chart":None, "evidence":None})
-            with st.chat_message("user"): st.markdown(user_query)
+            with st.chat_message("user"): 
+                st.markdown(user_query)
             
             with st.chat_message("assistant"):
                 with st.spinner("数智矩阵计算中..."):
@@ -44,16 +56,32 @@ def render_chat(filtered_df, api_key, model_name):
                         evidence = getattr(result, "evidence", None)
                         
                         st.markdown(answer)
-                        if chart: st.plotly_chart(chart, use_container_width=True)
-                        if evidence is not None: st.dataframe(evidence, use_container_width=True)
                         
-                        st.session_state.messages.append({"role":"assistant", "content":answer, "chart":chart, "evidence":evidence})
+                        # 为当前最新生成的图表分配独立 key，基于当前对话的总长度
+                        current_msg_index = len(st.session_state.messages)
+                        
+                        if chart is not None: 
+                            st.plotly_chart(
+                                chart, 
+                                use_container_width=True, 
+                                key=f"current_chart_{current_msg_index}"
+                            )
+                            
+                        if evidence is not None: 
+                            st.dataframe(evidence, use_container_width=True)
+                        
+                        # 追加 AI 回复记录
+                        st.session_state.messages.append({
+                            "role":"assistant", 
+                            "content":answer, 
+                            "chart":chart, 
+                            "evidence":evidence
+                        })
                     except Exception as e:
                         st.error(f"分析调度失败: {e}")
 
     st.divider()
     
-
     if REPORTLAB_AVAILABLE:
         pdf_bytes = generate_chat_pdf(st.session_state.messages)
         st.download_button("📄 导出完整聊天记录 (PDF)", pdf_bytes, "ai_chat_history.pdf")
