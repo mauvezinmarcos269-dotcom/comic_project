@@ -3,15 +3,24 @@ import uuid
 from core.agent.llm_router import ask_with_llm_router
 from core.ui.export_utils import generate_chat_pdf, REPORTLAB_AVAILABLE
 
+def build_message(role, content, chart=None, chart_key=None, evidence=None):
+    """统一的消息构造器，方便后期扩展和维护"""
+    return {
+        "role": role,
+        "content": content,
+        "chart": chart,
+        "chart_key": chart_key,
+        "evidence": evidence
+    }
+
 def init_chat():
     if "messages" not in st.session_state:
-        st.session_state.messages = [{
-            "role": "assistant",
-            "content": "欢迎使用美漫销量智能分析平台 👋\n\n你可以问我：\n- 漫威和DC在过去十年谁更具统治力？\n- 帮我找出销量前20的明星编剧",
-            "chart": None,
-            "chart_key": None,  # 新增：持久化图表唯一标识
-            "evidence": None
-        }]
+        st.session_state.messages = [
+            build_message(
+                role="assistant",
+                content="欢迎使用美漫销量智能分析平台 👋\n\n你可以问我：\n- 漫威和DC在过去十年谁更具统治力？\n- 帮我找出销量前20的明星编剧"
+            )
+        ]
 
 def render_chat(filtered_df, api_key, model_name):
     init_chat()
@@ -19,10 +28,11 @@ def render_chat(filtered_df, api_key, model_name):
     col1, col2 = st.columns([8, 2])
     with col2:
         if st.button("🧹 清空对话", use_container_width=True):
-            del st.session_state.messages
+            # 优化点：使用 pop 替代 del，永远安全，杜绝 KeyError
+            st.session_state.pop("messages", None)
             st.rerun()
 
-    # 1. 历史渲染：直接读取当时分配好的稳定 UUID
+    # 渲染历史对话
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -36,14 +46,8 @@ def render_chat(filtered_df, api_key, model_name):
         if not api_key:
             st.warning("请先在左侧边栏配置您的 API Key")
         else:
-            # 写入用户提问
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": user_query, 
-                "chart": None, 
-                "chart_key": None, 
-                "evidence": None
-            })
+            # 使用 build_message 写入用户提问
+            st.session_state.messages.append(build_message(role="user", content=user_query))
             with st.chat_message("user"): 
                 st.markdown(user_query)
             
@@ -56,11 +60,11 @@ def render_chat(filtered_df, api_key, model_name):
                         chart = getattr(result, "chart", None)
                         evidence = getattr(result, "evidence", None)
                         
-                        # 优化点 1：控制 DataFrame 体积，防止 session_state 内存溢出
+                        # 限制 DataFrame 体积
                         if evidence is not None:
                             evidence = evidence.head(100)
                             
-                        # 优化点 2：为图表生成终生唯一的 UUID，避免缓存清空后的 ID 碰撞
+                        # 固化 UUID
                         current_chart_key = f"chart_{uuid.uuid4().hex}" if chart is not None else None
                         
                         st.markdown(answer)
@@ -69,31 +73,33 @@ def render_chat(filtered_df, api_key, model_name):
                         if evidence is not None: 
                             st.dataframe(evidence, use_container_width=True)
                         
-                        # 将带有固定 key 的结果写入历史
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": answer, 
-                            "chart": chart, 
-                            "chart_key": current_chart_key,
-                            "evidence": evidence
-                        })
+                        # 写入 AI 回复
+                        st.session_state.messages.append(build_message(
+                            role="assistant", 
+                            content=answer, 
+                            chart=chart, 
+                            chart_key=current_chart_key,
+                            evidence=evidence
+                        ))
                         
                     except Exception as e:
-                        # 优化点 3：捕获异常并作为 assistant 的回复写入历史，防止上下文断裂
                         err_msg = f"分析调度失败: {e}"
                         st.error(err_msg)
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": err_msg,
-                            "chart": None,
-                            "chart_key": None,
-                            "evidence": None
-                        })
+                        # 异常时的兜底写入，保持上下文完整性
+                        st.session_state.messages.append(build_message(
+                            role="assistant",
+                            content=err_msg
+                        ))
 
     st.divider()
     
     if REPORTLAB_AVAILABLE:
-        pdf_bytes = generate_chat_pdf(st.session_state.messages)
+        # 优化点：导出前构造轻量级 JSON，彻底剥离 Figure 和 DataFrame 对象，防止序列化爆炸
+        export_messages = [
+            {"role": msg["role"], "content": msg["content"]} 
+            for msg in st.session_state.messages
+        ]
+        pdf_bytes = generate_chat_pdf(export_messages)
         st.download_button("📄 导出完整聊天记录 (PDF)", pdf_bytes, "ai_chat_history.pdf")
     else:
         st.download_button("📄 导出完整聊天记录 (需安装 reportlab)", b"", disabled=True)
