@@ -5,6 +5,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from typing import cast
 
 from core.constants import LABEL_ORDER, YEAR_COLUMN_CANDIDATES
 
@@ -93,11 +94,11 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     # ── 8. 小样本保护 ──────────────────────────────────────────────────────────
     n_clusters = min(4, len(ml_df))
     if n_clusters < 2:
-        ml_df["Cluster"]               = 0
-        ml_df["Cluster_Label"]         = LABEL_ORDER[-1]   # Long Tail
-        ml_df["Silhouette_Score"]      = 0.0
-        ml_df["PCA1"]                  = 0.0
-        ml_df["PCA2"]                  = 0.0
+        ml_df["Cluster"]                = 0
+        ml_df["Cluster_Label"]          = LABEL_ORDER[-1]   # Long Tail
+        ml_df["Silhouette_Score"]       = 0.0
+        ml_df["PCA1"]                   = 0.0
+        ml_df["PCA2"]                   = 0.0
         ml_df["PCA_Explained_Variance"] = 0.0
         return ml_df
 
@@ -109,10 +110,13 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     ml_df["Cluster"] = kmeans.fit_predict(X)
 
     # ── 10. Silhouette Score ──────────────────────────────────────────────────
-    sil_score = (
-        silhouette_score(X, ml_df["Cluster"])
-        if ml_df["Cluster"].nunique() > 1 else 0.0
-    )
+    # 修复：silhouette_score 要求 n_labels 在 [2, n_samples-1] 区间内
+    # 必须同时满足：有多于 1 个簇，且样本数严格大于簇数
+    n_unique = ml_df["Cluster"].nunique()
+    if n_unique > 1 and len(ml_df) > n_unique:
+        sil_score = float(silhouette_score(X, ml_df["Cluster"]))
+    else:
+        sil_score = 0.0
     ml_df["Silhouette_Score"] = sil_score
 
     # ── 11. PCA 降维 ──────────────────────────────────────────────────────────
@@ -121,13 +125,16 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     pca_result = pca.fit_transform(X)
     ml_df["PCA1"] = pca_result[:, 0]
     ml_df["PCA2"] = pca_result[:, 1] if n_components > 1 else 0.0
-    ml_df["PCA_Explained_Variance"] = pca.explained_variance_ratio_.sum()
+
+    # 修复：explained_variance_ratio_.sum() 在极端小样本时可能返回 NaN
+    variance_ratio = float(pca.explained_variance_ratio_.sum())
+    ml_df["PCA_Explained_Variance"] = 0.0 if pd.isna(variance_ratio) else variance_ratio
 
     # ── 12. 稳定的多维复合商业语义映射 ───────────────────────────────────────
     #
     # 归一化各簇统计均值至 [0,1]，消除量纲差异后按优先级规则依次分配标签。
     #
-    # 实际权重（注意：下方注释是文档，请勿与代码脱节）：
+    # 实际权重：
     #   Blockbuster : 0.6 * sales_norm + 0.4 * issue_norm
     #   Event       : 0.7 * sales_norm - 0.3 * issue_norm  （高销低期）
     #   Premium     : 0.5 * price_norm + 0.5 * rating_norm
@@ -149,22 +156,23 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     mapping: dict[int, str] = {}
 
     # 规则 1：Blockbuster = 高销量 + 高期数（持续主线 IP）
+    # 修复：cast(int) 消除 Pylance 对 idxmax() 返回 int|str 的警告
     scores = norm["sales_mean"] * 0.6 + norm["issue_mean"] * 0.4
-    best = scores[list(remaining)].idxmax()
+    best = cast(int, scores[list(remaining)].idxmax())
     mapping[best] = LABEL_ORDER[0]
     remaining.discard(best)
 
     # 规则 2：Event = 高销量 + 低期数（#1 创刊号 / 联动爆发）
     if remaining:
         scores = norm["sales_mean"] * 0.7 - norm["issue_mean"] * 0.3
-        best = scores[list(remaining)].idxmax()
+        best = cast(int, scores[list(remaining)].idxmax())
         mapping[best] = LABEL_ORDER[1]
         remaining.discard(best)
 
     # 规则 3：Premium = 高价格 + 高评分（精品限定）
     if remaining:
         scores = norm["price_mean"] * 0.5 + norm["rating_mean"] * 0.5
-        best = scores[list(remaining)].idxmax()
+        best = cast(int, scores[list(remaining)].idxmax())
         mapping[best] = LABEL_ORDER[2]
         remaining.discard(best)
 
@@ -172,9 +180,7 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     for cid in remaining:
         mapping[cid] = LABEL_ORDER[3]
 
-    # ── 修复③：fillna 兜底，保证 n_clusters < 4 时不产生 NaN ─────────────────
-    # 旧写法：ml_df["Cluster_Label"] = ml_df["Cluster"].map(mapping)
-    # 当 n_clusters=2 时 mapping 只有 2 个键，其余行 map 返回 NaN
+    # fillna 兜底，保证 n_clusters < 4 时不产生 NaN
     ml_df["Cluster_Label"] = (
         ml_df["Cluster"]
         .map(mapping)
