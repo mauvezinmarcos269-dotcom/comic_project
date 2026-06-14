@@ -21,8 +21,9 @@ def perform_advanced_clustering(df):
     rating_median = pd.to_numeric(rating_series, errors='coerce').median()
     ml_df['Rating_Num'] = pd.to_numeric(rating_series, errors='coerce').fillna(rating_median if not pd.isna(rating_median) else 3.0)
 
-    # 2. 安全的 Release Year 提取
-    year_series = ml_df['Release Year'] if 'Release Year' in ml_df.columns else pd.Series([2026]*len(ml_df))
+    # 2. 动态列名解耦：Release Year 多变体兼容
+    year_col = next((c for c in ['Release Year', 'Release_Year', 'Year', 'release_year'] if c in ml_df.columns), None)
+    year_series = ml_df[year_col] if year_col else pd.Series([2026]*len(ml_df))
     ml_df['Year_Num'] = pd.to_numeric(year_series, errors='coerce').fillna(2026).astype(int)
 
     # 3. 安全的因子化编码
@@ -42,7 +43,7 @@ def perform_advanced_clustering(df):
     features = ['Sales_Num', 'Issue_Num', 'Price_Num', 'Rating_Num', 'Publisher_Code', 'Year_Num', 'ComicType_Code']
     X = StandardScaler().fit_transform(ml_df[features])
 
-    # 5. 防崩设计：小样本自适应，防止 n_samples < n_clusters 导致崩溃
+    # 5. 防崩设计：小样本自适应
     n_clusters = min(4, len(ml_df))
     if n_clusters < 2:
         ml_df['Cluster'] = 0
@@ -56,7 +57,6 @@ def perform_advanced_clustering(df):
     kmeans = KMeans(n_clusters=n_clusters, init='k-means++', n_init=20, max_iter=500, random_state=42)
     ml_df['Cluster'] = kmeans.fit_predict(X)
     
-    # 保护 Silhouette Score 不因簇过少而报错
     try:
         ml_df['Silhouette_Score'] = silhouette_score(X, ml_df['Cluster'])
     except Exception:

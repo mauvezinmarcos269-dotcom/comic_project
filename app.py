@@ -1,12 +1,11 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from core.features.clustering import perform_advanced_clustering
+import plotly.express as px
+import pandas as pd
+import streamlit as st
 from sklearn.preprocessing import MinMaxScaler
 
 def render_cluster_probe(probe_df):
-    probe_df = probe_df.copy()
+    probe_df = probe_df.copy()  # 深度拷贝，安全隔离切片警告
     st.markdown("### 🧠 智能聚类分析中心")
     
     sil_score = probe_df['Silhouette_Score'].iloc[0] if 'Silhouette_Score' in probe_df.columns else 0.0
@@ -33,7 +32,6 @@ def render_cluster_probe(probe_df):
             cluster_counts = probe_df['Cluster_Label'].value_counts().reset_index()
             cluster_counts.columns = ['Cluster', 'Count']
             
-            # 使用固定色系保证色彩不漂移
             base_colors = {
                 "Blockbuster IP (大IP主线)": "#1f77b4",
                 "Event Comics (独立大事件)": "#d62728",
@@ -48,13 +46,13 @@ def render_cluster_probe(probe_df):
 
         with col_t2:
             st.markdown("#### 🎯 核心特征聚类中心热力图")
-            # 严格使用 MinMaxScaler 规范化
             summary_norm = pd.DataFrame(
                 MinMaxScaler().fit_transform(summary),
                 columns=summary.columns,
                 index=summary.index
             )
             
+            # 解决 IDE 类型检查报错，符合 Pylance 的规范
             fig_heat = px.imshow(
                 summary_norm, 
                 text_auto=True,  
@@ -62,13 +60,10 @@ def render_cluster_probe(probe_df):
                 color_continuous_scale="RdBu_r",
                 labels=dict(x="特征维度", y="聚类群体", color="归一化强度")
             )
-            
             fig_heat.update_traces(texttemplate="%{z:.2f}")
-            
             fig_heat.update_xaxes(side="top")
             fig_heat.update_layout(height=300, margin=dict(t=50, b=10))
             st.plotly_chart(fig_heat, use_container_width=True)
-
 
             st.markdown("#### 🕸️ 聚类中心多维雷达图")
             fig_radar = go.Figure()
@@ -84,7 +79,6 @@ def render_cluster_probe(probe_df):
 
     with tab_b:
         c1, c2 = st.columns(2)
-        # 恢复所有坐标轴探索选项
         axis_mode = c1.selectbox("📈 探索空间坐标轴", [
             "主成分降维空间 (PCA1 vs PCA2)", 
             "市场表现 (销量 vs 连载期)", 
@@ -94,7 +88,6 @@ def render_cluster_probe(probe_df):
         order = ["Blockbuster IP (大IP主线)", "Event Comics (独立大事件)", "Premium Series (精品限定)", "Long Tail (长尾市场)"]
         highlight_mode = c2.selectbox("🎯 重点高亮品类", ["全选 (显示所有)"] + order)
 
-        # 动态解析坐标轴
         if "PCA" in axis_mode:
             x_col, y_col = "PCA1", "PCA2"
         elif "商业定位" in axis_mode:
@@ -103,10 +96,12 @@ def render_cluster_probe(probe_df):
             x_col, y_col = "Issue_Num", "Sales_Num"
         
         title_col = "Title" if "Title" in probe_df.columns else "Norm_Title" if "Norm_Title" in probe_df.columns else None
-        hover_cols = [col for col in ["Unit Sales", "Price", "Rating", "Issue_Num"] if col in probe_df.columns]
+
+        target_hover_fields = ["Unit Sales", "Issue", "Price", "Rating", "Issue_Num"]
+        hover_cols = [col for col in target_hover_fields if col in probe_df.columns]
+        
         existing_labels = [label for label in order if label in probe_df['Cluster_Label'].unique()]
         
-        # 规范化构建颜色映射
         color_map = {}
         for label in existing_labels:
             if highlight_mode != "全选 (显示所有)" and label != highlight_mode:
@@ -132,12 +127,8 @@ def render_cluster_probe(probe_df):
     def get_top_titles(label, n=3):
         sub = probe_df[probe_df['Cluster_Label'] == label]
         if sub.empty: return "暂无数据"
-        if "Title" in sub.columns:
-            t_col = "Title"
-        elif "Norm_Title" in sub.columns:
-            t_col = "Norm_Title"
-        else:
-            return "未知"
+        t_col = "Title" if "Title" in sub.columns else "Norm_Title" if "Norm_Title" in sub.columns else None
+        if not t_col: return "未知"
         titles = sub.nlargest(n, 'Sales_Num')[t_col].dropna().unique().tolist()
         return "、".join(titles) if titles else "暂无"
 
