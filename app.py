@@ -3,9 +3,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from core.features.clustering import perform_advanced_clustering
+from sklearn.preprocessing import MinMaxScaler
 
 def render_cluster_probe(probe_df):
-    probe_df = probe_df.copy() # 深度拷贝防报错
+    probe_df = probe_df.copy()
     st.markdown("### 🧠 智能聚类分析中心")
     
     sil_score = probe_df['Silhouette_Score'].iloc[0] if 'Silhouette_Score' in probe_df.columns else 0.0
@@ -31,25 +32,33 @@ def render_cluster_probe(probe_df):
             st.markdown("#### 📈 聚类群组规模分布 (长尾验证)")
             cluster_counts = probe_df['Cluster_Label'].value_counts().reset_index()
             cluster_counts.columns = ['Cluster', 'Count']
+            
+            # 使用固定色系保证色彩不漂移
+            base_colors = {
+                "Blockbuster IP (大IP主线)": "#1f77b4",
+                "Event Comics (独立大事件)": "#d62728",
+                "Premium Series (精品限定)": "#2ca02c",
+                "Long Tail (长尾市场)": "#ff7f0e"
+            }
+            
             fig_bar = px.bar(cluster_counts, x='Cluster', y='Count', color='Cluster', text='Count',
-                             color_discrete_sequence=px.colors.qualitative.Plotly)
+                             color_discrete_map=base_colors)
             fig_bar.update_layout(showlegend=False, xaxis_title="聚类群体", yaxis_title="漫画数量", height=320, margin=dict(b=0, t=30))
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_t2:
-            st.markdown("#### 🎯 核心特征聚类中心热力图 (归一化)")
-            # 严格 MinMaxScaler
-            summary_norm = (summary - summary.min()) / (summary.max() - summary.min() + 1e-9)
+            st.markdown("#### 🎯 核心特征聚类中心热力图")
+            # 严格使用 MinMaxScaler 规范化
+            summary_norm = pd.DataFrame(
+                MinMaxScaler().fit_transform(summary),
+                columns=summary.columns,
+                index=summary.index
+            )
             
-            # 高表现力的聚类中心热力图
             fig_heat = px.imshow(
-                summary_norm,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale="RdBu_r",
+                summary_norm, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r",
                 labels=dict(x="特征维度", y="聚类群体", color="归一化强度")
             )
-            # 优化坐标轴显示，更具 BI 风格
             fig_heat.update_xaxes(side="top")
             fig_heat.update_layout(height=300, margin=dict(t=50, b=10))
             st.plotly_chart(fig_heat, use_container_width=True)
@@ -61,36 +70,48 @@ def render_cluster_probe(probe_df):
                 fig_radar.add_trace(go.Scatterpolar(
                     r=[data['Sales_Num'], data['Price_Num'], data['Rating_Num'], data['Issue_Num']], 
                     theta=['销量特征', '定价策略', '内容评分', '连载长度'],
-                    fill='toself', name=label
+                    fill='toself', name=label, marker=dict(color=base_colors.get(label, "#333"))
                 ))
             fig_radar.update_layout(polar=dict(radialaxis=dict(visible=False)), showlegend=True, height=350, margin=dict(t=30, b=30))
             st.plotly_chart(fig_radar, use_container_width=True)
 
     with tab_b:
         c1, c2 = st.columns(2)
-        axis_mode = c1.selectbox("📈 探索空间坐标轴", ["主成分降维空间 (PCA1 vs PCA2)", "市场表现 (销量 vs 连载期)"])
+        # 恢复所有坐标轴探索选项
+        axis_mode = c1.selectbox("📈 探索空间坐标轴", [
+            "主成分降维空间 (PCA1 vs PCA2)", 
+            "市场表现 (销量 vs 连载期)", 
+            "商业定位 (定价 vs 评分)"
+        ])
         
         order = ["Blockbuster IP (大IP主线)", "Event Comics (独立大事件)", "Premium Series (精品限定)", "Long Tail (长尾市场)"]
         highlight_mode = c2.selectbox("🎯 重点高亮品类", ["全选 (显示所有)"] + order)
 
-        x_col, y_col = ("PCA1", "PCA2") if "PCA" in axis_mode else ("Issue_Num", "Sales_Num")
+        # 动态解析坐标轴
+        if "PCA" in axis_mode:
+            x_col, y_col = "PCA1", "PCA2"
+        elif "商业定位" in axis_mode:
+            x_col, y_col = "Price_Num", "Rating_Num"
+        else:
+            x_col, y_col = "Issue_Num", "Sales_Num"
         
         title_col = "Title" if "Title" in probe_df.columns else "Norm_Title" if "Norm_Title" in probe_df.columns else None
         hover_cols = [col for col in ["Unit Sales", "Price", "Rating", "Issue_Num"] if col in probe_df.columns]
-        
         existing_labels = [label for label in order if label in probe_df['Cluster_Label'].unique()]
         
-        # 🌟 修复：使用更规范的 Series 索引映射控制散点大小
+        # 规范化构建颜色映射
+        color_map = {}
+        for label in existing_labels:
+            if highlight_mode != "全选 (显示所有)" and label != highlight_mode:
+                color_map[label] = "rgba(180,180,180,0.3)"
+            else:
+                color_map[label] = base_colors.get(label, "#333333")
+
         size_series = pd.Series(10, index=probe_df.index)
-        
         if highlight_mode != "全选 (显示所有)":
             mask = probe_df['Cluster_Label'] == highlight_mode
             size_series[mask] = 18
             size_series[~mask] = 4
-            color_map = {label: (px.colors.qualitative.Plotly[i] if label == highlight_mode else "rgba(180,180,180,0.3)") 
-                         for i, label in enumerate(existing_labels)}
-        else:
-            color_map = {label: px.colors.qualitative.Plotly[i] for i, label in enumerate(existing_labels)}
 
         probe_df['Size'] = size_series
 
@@ -100,7 +121,7 @@ def render_cluster_probe(probe_df):
         fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### 🏆 簇群代表作检索")
+    st.markdown("#### 🏆 簇群商业特征与代表作检索")
     def get_top_titles(label, n=3):
         sub = probe_df[probe_df['Cluster_Label'] == label]
         if sub.empty: return "暂无数据"
@@ -114,6 +135,13 @@ def render_cluster_probe(probe_df):
         return "、".join(titles) if titles else "暂无"
 
     cols = st.columns(4)
+    desc_map = {
+        order[0]: "持续高销量，高连载长度",
+        order[1]: "销量极端爆发，期数常为#1或#0",
+        order[2]: "发行受限，高评分，单价偏高",
+        order[3]: "销量偏低，分布极广，数量极大"
+    }
+    
     display_configs = [
         (0, "🔵", order[0], cols[0].info),
         (1, "🔴", order[1], cols[1].error),
@@ -122,4 +150,5 @@ def render_cluster_probe(probe_df):
     ]
     
     for idx, icon, label, render_func in display_configs:
-        render_func(f"**{icon} {label}**\n\n算法自动捕获代表作:\n\n{get_top_titles(label)}")
+        desc = desc_map.get(label, "")
+        render_func(f"**{icon} {label}**\n\n**特征**：{desc}\n\n**代表作**：\n{get_top_titles(label)}")
