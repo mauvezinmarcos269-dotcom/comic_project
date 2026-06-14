@@ -5,12 +5,9 @@ import plotly.graph_objects as go
 from core.features.clustering import perform_advanced_clustering
 
 def render_cluster_probe(probe_df):
-    # 1. 深度拷贝防止 SettingWithCopyWarning
-    probe_df = probe_df.copy()
-    
+    probe_df = probe_df.copy() # 深度拷贝防报错
     st.markdown("### 🧠 智能聚类分析中心")
     
-    # 提取模型元数据
     sil_score = probe_df['Silhouette_Score'].iloc[0] if 'Silhouette_Score' in probe_df.columns else 0.0
     var_sum = probe_df['PCA_Explained_Variance'].iloc[0] * 100 if 'PCA_Explained_Variance' in probe_df.columns else 0.0
 
@@ -19,59 +16,67 @@ def render_cluster_probe(probe_df):
     col2.metric("PCA 方差解释率", f"{var_sum:.1f}%", help="前两个主成分对原始数据信息的覆盖度。")
     st.divider()
 
-    # 2. 聚类统计摘要表与雷达图
-    tab_a, tab_b = st.tabs(["📊 统计与多维雷达图", "🔍 空间分布散点图"])
+    tab_a, tab_b = st.tabs(["📊 统计与分布画像", "🔍 空间降维散点图"])
 
     with tab_a:
-        st.markdown("#### 📊 聚类群组统计特性中心")
-        # 增加连载期数 (Issue_Num)，让老师看到四类漫画在连载时长上的明显区别
-        summary = probe_df.groupby("Cluster_Label").agg({
-            "Sales_Num": "mean", 
-            "Price_Num": "mean", 
-            "Rating_Num": "mean",
-            "Issue_Num": "mean"
-        }).round(2)
-        st.dataframe(summary, use_container_width=True)
-
-        # 动态雷达图 (引入归一化处理，防止销量数值碾压其他特征)
-        st.markdown("#### 🎯 核心特征聚类中心对比")
-        # 手动实现 MinMaxScaler 逻辑
-        summary_norm = (summary - summary.min()) / (summary.max() - summary.min() + 1e-9)
+        col_t1, col_t2 = st.columns([1, 1])
         
-        fig_radar = go.Figure()
-        for label in summary_norm.index:
-            data = summary_norm.loc[label]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=[data['Sales_Num'], data['Price_Num'], data['Rating_Num'], data['Issue_Num']], 
-                theta=['销量特征', '定价策略', '内容评分', '连载长度'],
-                fill='toself', name=label
-            ))
-        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=False)), showlegend=True, height=450)
-        st.plotly_chart(fig_radar, use_container_width=True)
+        with col_t1:
+            st.markdown("#### 📊 聚类群组统计特性中心")
+            summary = probe_df.groupby("Cluster_Label").agg({
+                "Sales_Num": "mean", "Price_Num": "mean", "Rating_Num": "mean", "Issue_Num": "mean"
+            }).round(2)
+            st.dataframe(summary, use_container_width=True)
+
+            # 新增：聚类规模柱状图
+            st.markdown("#### 📈 聚类群组规模分布 (长尾验证)")
+            cluster_counts = probe_df['Cluster_Label'].value_counts().reset_index()
+            cluster_counts.columns = ['Cluster', 'Count']
+            fig_bar = px.bar(cluster_counts, x='Cluster', y='Count', color='Cluster', text='Count',
+                             color_discrete_sequence=px.colors.qualitative.Plotly)
+            fig_bar.update_layout(showlegend=False, xaxis_title="聚类群体", yaxis_title="漫画数量", height=350, margin=dict(b=0, t=30))
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        with col_t2:
+            st.markdown("#### 🎯 核心特征聚类中心对比 (归一化)")
+            # 严格 MinMaxScaler 防止负数干扰
+            summary_norm = (summary - summary.min()) / (summary.max() - summary.min() + 1e-9)
+            
+            fig_radar = go.Figure()
+            for label in summary_norm.index:
+                data = summary_norm.loc[label]
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=[data['Sales_Num'], data['Price_Num'], data['Rating_Num'], data['Issue_Num']], 
+                    theta=['销量特征', '定价策略', '内容评分', '连载长度'],
+                    fill='toself', name=label
+                ))
+            fig_radar.update_layout(polar=dict(radialaxis=dict(visible=False)), showlegend=True, height=500, margin=dict(t=50, b=50))
+            st.plotly_chart(fig_radar, use_container_width=True)
 
     with tab_b:
         c1, c2 = st.columns(2)
         axis_mode = c1.selectbox("📈 探索空间坐标轴", ["主成分降维空间 (PCA1 vs PCA2)", "市场表现 (销量 vs 连载期)"])
         
-        # 固定下拉框顺序
         order = ["Blockbuster IP (大IP主线)", "Event Comics (独立大事件)", "Premium Series (精品限定)", "Long Tail (长尾市场)"]
         highlight_mode = c2.selectbox("🎯 重点高亮品类", ["全选 (显示所有)"] + order)
 
         x_col, y_col = ("PCA1", "PCA2") if "PCA" in axis_mode else ("Issue_Num", "Sales_Num")
         
-        # 安全获取动态列名
+        # 安全 Title 与 Hover 设置
         title_col = "Title" if "Title" in probe_df.columns else "Norm_Title" if "Norm_Title" in probe_df.columns else None
-        hover_cols = [col for col in ["Unit Sales", "Price", "Rating"] if col in probe_df.columns]
+        hover_cols = [col for col in ["Unit Sales", "Price", "Rating", "Issue_Num"] if col in probe_df.columns]
         
-        # 散点图高亮逻辑
+        # 散点图高亮与安全色系映射
+        existing_labels = [label for label in order if label in probe_df['Cluster_Label'].unique()]
         probe_df['Size'] = 10
+        
         if highlight_mode != "全选 (显示所有)":
             mask = probe_df['Cluster_Label'] == highlight_mode
             probe_df.loc[mask, 'Size'], probe_df.loc[~mask, 'Size'] = 18, 4
             color_map = {label: (px.colors.qualitative.Plotly[i] if label == highlight_mode else "rgba(180,180,180,0.3)") 
-                         for i, label in enumerate(order)}
+                         for i, label in enumerate(existing_labels)}
         else:
-            color_map = {label: px.colors.qualitative.Plotly[i] for i, label in enumerate(order)}
+            color_map = {label: px.colors.qualitative.Plotly[i] for i, label in enumerate(existing_labels)}
 
         fig = px.scatter(probe_df, x=x_col, y=y_col, color='Cluster_Label', size='Size',
                          hover_name=title_col, hover_data=hover_cols,
@@ -79,16 +84,20 @@ def render_cluster_probe(probe_df):
         fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
 
-    # 3. 动态代表作提取 (严格按指定顺序渲染卡片)
     st.markdown("#### 🏆 簇群代表作检索")
     def get_top_titles(label, n=3):
         sub = probe_df[probe_df['Cluster_Label'] == label]
         if sub.empty: return "暂无数据"
-        t_col = "Title" if "Title" in sub.columns else "Norm_Title"
-        return "、".join(sub.nlargest(n, 'Sales_Num')[t_col].dropna().unique().tolist()) if t_col else "未知"
+        if "Title" in sub.columns:
+            t_col = "Title"
+        elif "Norm_Title" in sub.columns:
+            t_col = "Norm_Title"
+        else:
+            return "未知"
+        titles = sub.nlargest(n, 'Sales_Num')[t_col].dropna().unique().tolist()
+        return "、".join(titles) if titles else "暂无"
 
     cols = st.columns(4)
-    # 按商业逻辑固定的顺序渲染，防止错乱
     display_configs = [
         (0, "🔵", order[0], cols[0].info),
         (1, "🔴", order[1], cols[1].error),
