@@ -37,7 +37,7 @@ def execute_local_module(
     params = route.get("params", {})
 
     notice = (
-        "提示：由于大模型未连接，已切换至本地匹配模式。\\\\n\\\\n"
+        "提示：由于大模型未连接，已切换至本地匹配模式。\\n\\n"
         if "本地" in route.get("reason", "")
         else ""
     )
@@ -215,7 +215,9 @@ def execute_local_module(
         
         # 如果没有客户端，返回基础统计信息
         if client is None:
-            ans = notice + f"当前过滤数据集共 `{len(df):,}` 行。请输入包含"走势"、"占比"、"相关性"或"聚类"等词汇调用图表。"
+            # 修复：使用单引号包裹提示词，避免中文引号导致的语法错误
+            tips = "走势", "占比", "相关性", "聚类"
+            ans = notice + f"当前过滤数据集共 `{len(df):,}` 行。请输入包含“{tips[0]}”、“{tips[1]}”、“{tips[2]}”或“{tips[3]}”等词汇调用图表。"
             return RouterResult(ans, None, None, route)
         
         # 尝试使用 LLM 回答
@@ -224,7 +226,7 @@ def execute_local_module(
             system_msg = "你是一个美漫数据分析助手，请基于样本简要回答问题。"
             ans_dict = client.chat_json([
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"数据抽样: {sample}\\\\n问题: {question}"},
+                {"role": "user", "content": f"数据抽样: {sample}\\n问题: {question}"},
             ])
             ans_text = (
                 ans_dict.get("raw_content", json.dumps(ans_dict, ensure_ascii=False))
