@@ -83,6 +83,18 @@ def run_pipeline():
     
     df.to_excel(OUTPUT_FILE, index=False)
     print(f"✅ 富化完成！输出文件: {OUTPUT_FILE}")
+       
+    # 在输出前执行全局聚类，固化 ML 结果
+    try:
+        from core.features.clustering import perform_advanced_clustering
+        print("🧠 正在执行全局 PCA 与 KMeans 聚类...")
+        df = perform_advanced_clustering(df)
+    except Exception as e:
+        logger.error(f"全局聚类失败，跳过该步骤: {e}")
+
+    # 最终写入
+    df.to_excel(OUTPUT_FILE, index=False)
+    print(f"✅ 富化与聚类完成！输出文件: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     run_pipeline()
