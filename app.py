@@ -56,12 +56,19 @@ def render_cluster_probe(probe_df):
             )
             
             fig_heat = px.imshow(
-                summary_norm, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r",
+                summary_norm, 
+                text_auto=True,  
+                aspect="auto", 
+                color_continuous_scale="RdBu_r",
                 labels=dict(x="特征维度", y="聚类群体", color="归一化强度")
             )
+            
+            fig_heat.update_traces(texttemplate="%{z:.2f}")
+            
             fig_heat.update_xaxes(side="top")
             fig_heat.update_layout(height=300, margin=dict(t=50, b=10))
             st.plotly_chart(fig_heat, use_container_width=True)
+
 
             st.markdown("#### 🕸️ 聚类中心多维雷达图")
             fig_radar = go.Figure()
