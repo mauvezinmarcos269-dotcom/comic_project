@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -11,6 +12,18 @@ from core.constants import (
     CLUSTER_DESC,
     LABEL_ORDER,
 )
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """
+    安全转换为 float，消除 Pylance 黄色警告。
+    """
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 # ── 内部工具 ──────────────────────────────────────────────────────────────────
@@ -46,7 +59,7 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
     聚类多维探针主入口。
     接收已携带 ML 标签的切片 DataFrame（由全局数据筛选而来）。
     """
-    # ── 修复②：空 DataFrame 保护 ────────────────────────────────────────────
+    # ── 空 DataFrame 保护 ────────────────────────────────────────────────────
     if probe_df.empty:
         st.warning("当前筛选条件下无数据，请调整侧边栏筛选范围。")
         return
@@ -55,15 +68,14 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
 
     st.markdown("### 🧠 智能聚类分析中心")
 
-    # ── 修复③：.iat[0] + 列存在检查，规避 IndexError ────────────────────────
-    sil_score = (
-        float(probe_df["Silhouette_Score"].iat[0])
-        if "Silhouette_Score" in probe_df.columns else 0.0
-    )
-    var_sum = (
-        float(probe_df["PCA_Explained_Variance"].iat[0]) * 100
-        if "PCA_Explained_Variance" in probe_df.columns else 0.0
-    )
+    # ── 修复：使用 safe_float 消除类型警告 ────────────────────────────────────
+    sil_score = 0.0
+    if "Silhouette_Score" in probe_df.columns and not probe_df.empty:
+        sil_score = safe_float(probe_df["Silhouette_Score"].iloc[0])
+    
+    var_sum = 0.0
+    if "PCA_Explained_Variance" in probe_df.columns and not probe_df.empty:
+        var_sum = safe_float(probe_df["PCA_Explained_Variance"].iloc[0]) * 100
 
     col_m1, col_m2 = st.columns(2)
     col_m1.metric(
@@ -151,9 +163,14 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             "市场表现空间 (销量 vs 连载期)",
             "商业定位空间 (定价 vs 评分)",
         ])
+        # 只显示实际存在的标签
+        existing_labels = [
+            lbl for lbl in LABEL_ORDER
+            if lbl in probe_df["Cluster_Label"].unique()
+        ]
         highlight_mode = c2.selectbox(
             "🎯 重点高亮品类",
-            ["全选 (显示所有)"] + LABEL_ORDER,
+            ["全选 (显示所有)"] + existing_labels,
         )
 
         if "PCA" in axis_mode:
@@ -170,10 +187,17 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             c for c in ("Unit Sales", "Issue", "Price", "Rating", "Issue_Num")
             if c in probe_df.columns
         ]
-        existing_labels = [
-            lbl for lbl in LABEL_ORDER
-            if lbl in probe_df["Cluster_Label"].unique()
-        ]
+
+        # 修复：使用明确的 dtype 和 loc 索引
+        size_series = pd.Series(
+            data=10.0,
+            index=probe_df.index,
+            dtype=float
+        )
+        if highlight_mode != "全选 (显示所有)":
+            mask = probe_df["Cluster_Label"] == highlight_mode
+            size_series.loc[mask] = 18.0
+            size_series.loc[~mask] = 4.0
 
         color_map = {
             lbl: (
@@ -184,15 +208,10 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             for lbl in existing_labels
         }
 
-        size_series = pd.Series(10, index=probe_df.index)
-        if highlight_mode != "全选 (显示所有)":
-            mask = probe_df["Cluster_Label"] == highlight_mode
-            size_series[mask]  = 18
-            size_series[~mask] = 4
-        probe_df = probe_df.assign(_Size=size_series)
+        plot_df = probe_df.assign(_Size=size_series)
 
         fig = px.scatter(
-            probe_df, x=x_col, y=y_col,
+            plot_df, x=x_col, y=y_col,
             color="Cluster_Label", size="_Size",
             hover_name=title_col, hover_data=hover_cols,
             color_discrete_map=color_map, height=550,
@@ -206,23 +225,23 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
     # ── 代表作检索卡片 ────────────────────────────────────────────────────────
     st.markdown("#### 🏆 簇群商业特征与代表作检索")
 
-    n_labels = len(LABEL_ORDER)
-    card_cols = st.columns(n_labels)
-    # 固定展示样式循环（超出部分安全截断）
-    _RENDER_STYLES = ["info", "error", "success", "warning"]
-    _ICONS         = ["🔵", "🔴", "🟢", "🟠"]
+    # 只显示实际存在的标签
+    existing_labels = [lbl for lbl in LABEL_ORDER if lbl in probe_df["Cluster_Label"].unique()]
+    n_labels = len(existing_labels)
+    
+    if n_labels > 0:
+        card_cols = st.columns(n_labels)
+        _RENDER_STYLES = ["info", "error", "success", "warning"]
+        _ICONS = ["🔵", "🔴", "🟢", "🟠"]
 
-    for col, icon, label, style in zip(
-        card_cols,
-        _ICONS,
-        LABEL_ORDER,
-        _RENDER_STYLES,
-    ):
-        desc = CLUSTER_DESC.get(label, "")
-        top  = _get_top_titles(probe_df, label)
-        render_fn = getattr(col, style)
-        render_fn(
-            f"**{icon} {label}**\n\n"
-            f"**商业特征**：{desc}\n\n"
-            f"**算法实时捕获代表作**：\n{top}"
-        )
+        for i, (col, icon, label, style) in enumerate(zip(
+            card_cols, _ICONS, existing_labels, _RENDER_STYLES
+        )):
+            desc = CLUSTER_DESC.get(label, "")
+            top = _get_top_titles(probe_df, label)
+            render_fn = getattr(col, style)
+            render_fn(
+                f"**{icon} {label}**\\n\\n"
+                f"**商业特征**：{desc}\\n\\n"
+                f"**算法实时捕获代表作**：\\n{top}"
+            )

@@ -9,56 +9,41 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from core.constants import YEAR_COLUMN_CANDIDATES
+from core.constants import YEAR_COLUMN_CANDIDATES, N_CLUSTERS
+from core.features.clustering import perform_advanced_clustering
 
 
-def perform_pca_clustering(df: pd.DataFrame, n_clusters: int = 3) -> pd.DataFrame | None:
+def perform_pca_clustering(df: pd.DataFrame, n_clusters: int = N_CLUSTERS) -> pd.DataFrame | None:
     """
     轻量 PCA 聚类，仅供 AI 问答路由（executor.py pca_cluster 模块）使用。
-    不用于 dashboard 或 cluster_probe —— 那两个组件统一使用
-    core.features.clustering.perform_advanced_clustering 的结果。
-
-    修复：Release Year 列名动态查找，避免列名差异导致 KeyError。
+    内部复用 perform_advanced_clustering 的核心逻辑，确保与全局聚类一致。
 
     Args:
         df:          输入 DataFrame
-        n_clusters:  KMeans 簇数
+        n_clusters:  KMeans 簇数（默认使用全局常量 N_CLUSTERS）
 
     Returns:
         带有 Cluster / PCA1 / PCA2 / Title / Studio/Pub 列的 DataFrame，
         若样本不足则返回 None。
     """
-    # ── 修复⑥：动态查找年份列，兼容 "Release Year" / "Release_Year" / "Year" ──
-    year_col = next(
-        (c for c in YEAR_COLUMN_CANDIDATES if c in df.columns), None
-    )
-    if year_col is None:
-        # 三种候选列都不存在时，跳过年份特征而非抛出 KeyError
-        base_features = ["Unit Sales", "Price"]
-    else:
-        base_features = ["Unit Sales", "Price", year_col]
-
-    analysis_df = df[base_features].dropna().copy()
-    if len(analysis_df) < max(10, n_clusters):
+    # 直接调用全局聚类逻辑，确保一致性
+    result = perform_advanced_clustering(df.copy())
+    
+    # 检查是否有足够的聚类结果
+    if result is None or result.empty:
         return None
-
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(analysis_df)
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    analysis_df["Cluster"] = kmeans.fit_predict(scaled_data)
-
-    pca = PCA(n_components=2)
-    pca_result = pca.fit_transform(scaled_data)
-    analysis_df["PCA1"] = pca_result[:, 0]
-    analysis_df["PCA2"] = pca_result[:, 1]
-
-    # 回填原始 DataFrame 中的标题与出版商，方便悬停显示
-    for col in ("Title", "Studio/Pub"):
-        if col in df.columns:
-            analysis_df[col] = df.loc[analysis_df.index, col]
-
-    return analysis_df
+    
+    # 保留必要的列用于可视化
+    required_cols = ["Cluster", "PCA1", "PCA2", "Cluster_Label"]
+    for col in required_cols:
+        if col not in result.columns:
+            return None
+    
+    # 确保 Title 和 Studio/Pub 存在
+    if "Title" not in result.columns and "Norm_Title" in result.columns:
+        result["Title"] = result["Norm_Title"]
+    
+    return result
 
 
 def extract_title_keywords(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -75,7 +60,7 @@ def extract_title_keywords(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
     }
     all_words: list[str] = []
     for title in df[target_col].dropna():
-        words = re.findall(r"\b[a-zA-Z]{3,}\b", str(title).lower())
+        words = re.findall(r"\\b[a-zA-Z]{3,}\\b", str(title).lower())
         all_words.extend(w for w in words if w not in stop_words)
 
     word_counts = Counter(all_words).most_common(top_n)
@@ -91,7 +76,8 @@ def perform_regression(
     if len(analysis_df) < 5:
         return None, None
 
-    X = sm.add_constant(analysis_df["Price"])
+    # 修复：使用 DataFrame 而非 Series，确保类型稳定
+    X = sm.add_constant(analysis_df[["Price"]], has_constant="add")
     y = analysis_df["Unit Sales"]
     model = sm.OLS(y, X).fit()
     result_df = analysis_df.copy()

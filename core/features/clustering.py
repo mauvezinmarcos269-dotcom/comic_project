@@ -7,7 +7,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from typing import cast
 
-from core.constants import LABEL_ORDER, YEAR_COLUMN_CANDIDATES
+from core.constants import LABEL_ORDER, YEAR_COLUMN_CANDIDATES, N_CLUSTERS
 
 
 def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
@@ -22,12 +22,6 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
         Silhouette_Score         float 轮廓系数（全局常量列）
         PCA_Explained_Variance   float PCA 方差解释率（全局常量列）
         Sales_Num / Price_Num / Rating_Num / Issue_Num  float 归一前数值列
-
-    标签映射规则（多维复合，优先级递进）：
-        Blockbuster ← 最高 0.6*sales_norm + 0.4*issue_norm
-        Event       ← 剩余中最高 0.7*sales_norm - 0.3*issue_norm
-        Premium     ← 剩余中最高 0.5*price_norm + 0.5*rating_norm
-        Long Tail   ← 最后剩余的簇（也作为 NaN 兜底默认值）
     """
     ml_df = df.copy()
 
@@ -37,7 +31,7 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
         else pd.Series(["1"] * len(ml_df))
     ).astype(str)
     ml_df["Issue_Num"] = (
-        issue_text.str.extract(r"(\d+)")[0]
+        issue_text.str.extract(r"(\\\\d+)")[0]
         .fillna(-1)
         .astype(int)
     )
@@ -92,7 +86,7 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     X = StandardScaler().fit_transform(ml_df[features])
 
     # ── 8. 小样本保护 ──────────────────────────────────────────────────────────
-    n_clusters = min(4, len(ml_df))
+    n_clusters = min(N_CLUSTERS, len(ml_df))
     if n_clusters < 2:
         ml_df["Cluster"]                = 0
         ml_df["Cluster_Label"]          = LABEL_ORDER[-1]   # Long Tail
@@ -102,7 +96,7 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
         ml_df["PCA_Explained_Variance"] = 0.0
         return ml_df
 
-    # ── 9. KMeans ─────────────────────────────────────────────────────────────
+    # ── 9. KMeans（使用常量 N_CLUSTERS）───────────────────────────────────────
     kmeans = KMeans(
         n_clusters=n_clusters, init="k-means++",
         n_init=20, max_iter=500, random_state=42,
@@ -110,8 +104,6 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     ml_df["Cluster"] = kmeans.fit_predict(X)
 
     # ── 10. Silhouette Score ──────────────────────────────────────────────────
-    # 修复：silhouette_score 要求 n_labels 在 [2, n_samples-1] 区间内
-    # 必须同时满足：有多于 1 个簇，且样本数严格大于簇数
     n_unique = ml_df["Cluster"].nunique()
     if n_unique > 1 and len(ml_df) > n_unique:
         sil_score = float(silhouette_score(X, ml_df["Cluster"]))
@@ -126,20 +118,10 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     ml_df["PCA1"] = pca_result[:, 0]
     ml_df["PCA2"] = pca_result[:, 1] if n_components > 1 else 0.0
 
-    # 修复：explained_variance_ratio_.sum() 在极端小样本时可能返回 NaN
     variance_ratio = float(pca.explained_variance_ratio_.sum())
     ml_df["PCA_Explained_Variance"] = 0.0 if pd.isna(variance_ratio) else variance_ratio
 
     # ── 12. 稳定的多维复合商业语义映射 ───────────────────────────────────────
-    #
-    # 归一化各簇统计均值至 [0,1]，消除量纲差异后按优先级规则依次分配标签。
-    #
-    # 实际权重：
-    #   Blockbuster : 0.6 * sales_norm + 0.4 * issue_norm
-    #   Event       : 0.7 * sales_norm - 0.3 * issue_norm  （高销低期）
-    #   Premium     : 0.5 * price_norm + 0.5 * rating_norm
-    #   Long Tail   : 剩余（也作为 NaN 兜底默认值）
-    #
     cluster_stats = ml_df.groupby("Cluster").agg(
         sales_mean  = ("Sales_Num",  "mean"),
         issue_mean  = ("Issue_Num",  "mean"),
@@ -156,7 +138,6 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     mapping: dict[int, str] = {}
 
     # 规则 1：Blockbuster = 高销量 + 高期数（持续主线 IP）
-    # 修复：cast(int) 消除 Pylance 对 idxmax() 返回 int|str 的警告
     scores = norm["sales_mean"] * 0.6 + norm["issue_mean"] * 0.4
     best = cast(int, scores[list(remaining)].idxmax())
     mapping[best] = LABEL_ORDER[0]
@@ -180,11 +161,10 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     for cid in remaining:
         mapping[cid] = LABEL_ORDER[3]
 
-    # fillna 兜底，保证 n_clusters < 4 时不产生 NaN
     ml_df["Cluster_Label"] = (
         ml_df["Cluster"]
         .map(mapping)
-        .fillna(LABEL_ORDER[-1])   # 未覆盖的簇全部归入 Long Tail
+        .fillna(LABEL_ORDER[-1])
     )
 
     return ml_df

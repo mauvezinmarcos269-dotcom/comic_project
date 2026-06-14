@@ -6,6 +6,9 @@ LABEL_ORDER: list[str] = [
     "Long Tail (长尾市场)",
 ]
 
+# ── 聚类数量（必须与 LABEL_ORDER 长度一致）───────────────────────────────────
+N_CLUSTERS: int = len(LABEL_ORDER)  # = 4
+
 # ── 每个标签对应的固定展示颜色 ────────────────────────────────────────────────
 # 顺序与 LABEL_ORDER 一一对应，改标签名时同步改这里
 CLUSTER_COLORS: dict[str, str] = {
