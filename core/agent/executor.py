@@ -26,6 +26,16 @@ def safe_columns(df: pd.DataFrame, desired_cols: list[str]) -> list[str]:
     return [c for c in desired_cols if c in df.columns]
 
 
+def _get_pub_col(df: pd.DataFrame) -> str | None:
+    """动态获取出版商列名"""
+    return next((c for c in ["Studio/Pub", "Publisher", "publisher", "Studio", "Pub"] if c in df.columns), None)
+
+
+def _get_sales_col(df: pd.DataFrame) -> str | None:
+    """动态获取销量列名"""
+    return next((c for c in ["Unit Sales", "sales", "Sales"] if c in df.columns), None)
+
+
 def execute_local_module(
     route: dict[str, Any],
     question: str,
@@ -37,7 +47,7 @@ def execute_local_module(
     params = route.get("params", {})
 
     notice = (
-        "提示：由于大模型未连接，已切换至本地匹配模式。\\n\\n"
+        "提示：由于大模型未连接，已切换至本地匹配模式。\n\n"
         if "本地" in route.get("reason", "")
         else ""
     )
@@ -53,9 +63,9 @@ def execute_local_module(
     # ==================== 出版商份额饼图 ====================
     if module == "publisher_share":
         fig = plot_publisher_share(df)
-        # 防御 Studio/Pub 列不存在
-        if "Studio/Pub" in df.columns:
-            evidence = df["Studio/Pub"].value_counts().reset_index()
+        pub_col = _get_pub_col(df)
+        if pub_col:
+            evidence = df[pub_col].value_counts().reset_index()
             evidence.columns = ["出版商", "收录期刊数"]
         else:
             evidence = pd.DataFrame()
@@ -76,15 +86,18 @@ def execute_local_module(
 
     # ==================== Marvel vs DC 对比 ====================
     if module == "marvel_dc":
-        if "Studio/Pub" not in df.columns:
+        pub_col = _get_pub_col(df)
+        sales_col = _get_sales_col(df)
+        
+        if not pub_col:
             return RouterResult("缺少出版商字段，无法对比。", None, None, route)
         
-        publisher = df["Studio/Pub"].astype(str).str.lower()
+        publisher = df[pub_col].astype(str).str.lower()
         sub = df[publisher.str.contains("marvel|dc", na=False)].copy()
         
-        if "Unit Sales" in df.columns and not sub.empty:
+        if sales_col and not sub.empty:
             evidence = (
-                sub.groupby("Studio/Pub")["Unit Sales"]
+                sub.groupby(pub_col)[sales_col]
                 .agg(["count", "sum", "mean"])
                 .reset_index()
             )
@@ -115,7 +128,10 @@ def execute_local_module(
             return RouterResult("有效数值数据不足，无法进行 PCA 聚类。", None, None, route)
         
         fig = plot_pca_clusters(pca_df)
-        display_cols = safe_columns(pca_df, ["Title", "Studio/Pub", "Unit Sales", "Price", "Cluster", "Cluster_Label"])
+        display_cols = safe_columns(pca_df, [
+            "Title", "Norm_Title", "Studio/Pub", "Publisher", 
+            "Unit Sales", "sales", "Price", "Cluster", "Cluster_Label"
+        ])
         return RouterResult(
             notice + "已完成 K-Means 聚类和 PCA 降维分析。",
             fig,
@@ -129,7 +145,7 @@ def execute_local_module(
         if reg_df is None:
             return RouterResult("价格或销量样本不足，跳过回归分析。", None, None, route)
         
-        display_cols = safe_columns(reg_df, ["Price", "Unit Sales", "Predicted_Sales"])
+        display_cols = safe_columns(reg_df, ["Price", "Unit Sales", "sales", "Predicted_Sales"])
         return RouterResult(
             notice + "已完成价格与销量的 OLS 回归分析。",
             None,
@@ -171,8 +187,11 @@ def execute_local_module(
 
     # ==================== 分组统计 ====================
     if module == "grouped_stats":
-        groupby = params.get("groupby", "Studio/Pub")
-        value = params.get("value", "Unit Sales")
+        pub_col = _get_pub_col(df) or "Studio/Pub"
+        sales_col = _get_sales_col(df) or "Unit Sales"
+        
+        groupby = params.get("groupby", pub_col)
+        value = params.get("value", sales_col)
         top_n = min(int(params.get("top_n", 10)), 50)
 
         if groupby not in df.columns or value not in df.columns:
@@ -193,14 +212,19 @@ def execute_local_module(
     if module == "top_sales":
         top_n = min(int(params.get("top_n", 10)), 50)
         title_col = "Norm_Title" if "Norm_Title" in df.columns else "Title"
+        sales_col = _get_sales_col(df)
+        pub_col = _get_pub_col(df)
         
-        if "Unit Sales" not in df.columns:
+        if not sales_col:
             return RouterResult("缺少销量特征列。", None, None, route)
         
-        # 防御 Studio/Pub 列不存在
-        group_cols = [c for c in [title_col, "Studio/Pub"] if c in df.columns]
-        evidence = df.groupby(group_cols)["Unit Sales"].sum().reset_index()
-        evidence = evidence.sort_values("Unit Sales", ascending=False).head(top_n)
+        # 修复：防止 group_cols 为空导致 groupby([]) 崩溃
+        group_cols = [c for c in [title_col, pub_col] if c and c in df.columns]
+        if not group_cols:
+            return RouterResult("缺少标题字段，无法进行全局排行。", None, None, route)
+            
+        evidence = df.groupby(group_cols)[sales_col].sum().reset_index()
+        evidence = evidence.sort_values(sales_col, ascending=False).head(top_n)
         
         return RouterResult(
             notice + f"已提取全局销量排名前 {top_n} 位的系列。",
@@ -209,24 +233,21 @@ def execute_local_module(
 
     # ==================== 通用问答 ====================
     if module == "generic_qa" or client is None:
-        # 如果路由包含原始内容，直接返回
         if "raw_content" in route:
             return RouterResult(notice + str(route["raw_content"]), None, None, route)
         
-        # 如果没有客户端，返回基础统计信息
         if client is None:
-            # 修复：使用单引号包裹提示词，避免中文引号导致的语法错误
-            tips = "走势", "占比", "相关性", "聚类"
+            # 修复：修改 tuple 为 list，可读性更好
+            tips = ["走势", "占比", "相关性", "聚类"]
             ans = notice + f"当前过滤数据集共 `{len(df):,}` 行。请输入包含“{tips[0]}”、“{tips[1]}”、“{tips[2]}”或“{tips[3]}”等词汇调用图表。"
             return RouterResult(ans, None, None, route)
         
-        # 尝试使用 LLM 回答
         try:
             sample = df.sample(min(5, len(df)), random_state=42).to_dict(orient="records")
             system_msg = "你是一个美漫数据分析助手，请基于样本简要回答问题。"
             ans_dict = client.chat_json([
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"数据抽样: {sample}\\n问题: {question}"},
+                {"role": "user", "content": f"数据抽样: {sample}\n问题: {question}"},
             ])
             ans_text = (
                 ans_dict.get("raw_content", json.dumps(ans_dict, ensure_ascii=False))
