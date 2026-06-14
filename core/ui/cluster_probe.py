@@ -13,11 +13,7 @@ from core.constants import (
     LABEL_ORDER,
 )
 
-
 def safe_float(value: Any, default: float = 0.0) -> float:
-    """
-    安全转换为 float，消除 Pylance 黄色警告。
-    """
     try:
         if pd.isna(value):
             return default
@@ -25,11 +21,7 @@ def safe_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-
-# ── 内部工具 ──────────────────────────────────────────────────────────────────
-
 def _get_top_titles(df: pd.DataFrame, label: str, n: int = 3) -> str:
-    """返回指定簇销量最高 n 部作品的标题，以顿号拼接。"""
     sub = df[df["Cluster_Label"] == label]
     if sub.empty:
         return "暂无数据"
@@ -41,9 +33,7 @@ def _get_top_titles(df: pd.DataFrame, label: str, n: int = 3) -> str:
     titles = sub.nlargest(n, "Sales_Num")[t_col].dropna().unique().tolist()
     return "、".join(titles) if titles else "暂无代表作"
 
-
 def _build_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """计算各簇核心指标均值，用于热力图与雷达图。"""
     return df.groupby("Cluster_Label").agg(
         Sales_Num  = ("Sales_Num",  "mean"),
         Price_Num  = ("Price_Num",  "mean"),
@@ -51,24 +41,15 @@ def _build_summary(df: pd.DataFrame) -> pd.DataFrame:
         Issue_Num  = ("Issue_Num",  "mean"),
     ).round(2)
 
-
-# ── 主入口 ────────────────────────────────────────────────────────────────────
-
 def render_cluster_probe(probe_df: pd.DataFrame) -> None:
-    """
-    聚类多维探针主入口。
-    接收已携带 ML 标签的切片 DataFrame（由全局数据筛选而来）。
-    """
-    # ── 空 DataFrame 保护 ────────────────────────────────────────────────────
     if probe_df.empty:
         st.warning("当前筛选条件下无数据，请调整侧边栏筛选范围。")
         return
 
-    probe_df = probe_df.copy()  # 深拷贝，杜绝 SettingWithCopyWarning
+    probe_df = probe_df.copy()
 
     st.markdown("### 🧠 智能聚类分析中心")
 
-    # ── 修复：使用 safe_float 消除类型警告 ────────────────────────────────────
     sil_score = 0.0
     if "Silhouette_Score" in probe_df.columns and not probe_df.empty:
         sil_score = safe_float(probe_df["Silhouette_Score"].iloc[0])
@@ -90,7 +71,6 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
 
     tab_a, tab_b = st.tabs(["📊 统计与分布画像", "🔍 空间降维散点图"])
 
-    # ── Tab A：统计画像 ────────────────────────────────────────────────────────
     with tab_a:
         summary = _build_summary(probe_df)
         col_t1, col_t2 = st.columns([1, 1])
@@ -100,14 +80,12 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             st.dataframe(summary, use_container_width=True)
 
             st.markdown("#### 📈 聚类群组规模分布")
-
             cluster_counts = (
                 probe_df["Cluster_Label"]
                 .value_counts()
                 .rename_axis("Cluster")
                 .reset_index(name="Count")
             )
-
             fig_bar = px.bar(
                 cluster_counts, x="Cluster", y="Count",
                 color="Cluster", text="Count",
@@ -121,41 +99,44 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_t2:
-            st.markdown("#### 🎯 核心特征聚类中心热力图")
-            summary_norm = pd.DataFrame(
-                MinMaxScaler().fit_transform(summary),
-                columns=summary.columns,
-                index=summary.index,
-            )
-            fig_heat = px.imshow(
-                summary_norm, text_auto=True, aspect="auto",
-                color_continuous_scale="RdBu_r",
-                labels=dict(x="特征维度", y="聚类群体", color="归一化强度"),
-            )
-            fig_heat.update_traces(texttemplate="%{z:.2f}")
-            fig_heat.update_xaxes(side="top")
-            fig_heat.update_layout(height=300, margin=dict(t=50, b=10))
-            st.plotly_chart(fig_heat, use_container_width=True)
+            # 修复：防止只有 1 个聚类群体时，缩放塌陷崩溃
+            if len(summary) <= 1:
+                st.info("当前仅剩一个聚类群体，无法进行多维特征对比与雷达图渲染。")
+            else:
+                st.markdown("#### 🎯 核心特征聚类中心热力图")
+                summary_norm = pd.DataFrame(
+                    MinMaxScaler().fit_transform(summary),
+                    columns=summary.columns,
+                    index=summary.index,
+                )
+                fig_heat = px.imshow(
+                    summary_norm, text_auto=True, aspect="auto",
+                    color_continuous_scale="RdBu_r",
+                    labels=dict(x="特征维度", y="聚类群体", color="归一化强度"),
+                )
+                fig_heat.update_traces(texttemplate="%{z:.2f}")
+                fig_heat.update_xaxes(side="top")
+                fig_heat.update_layout(height=300, margin=dict(t=50, b=10))
+                st.plotly_chart(fig_heat, use_container_width=True)
 
-            st.markdown("#### 🕸️ 聚类中心多维雷达图")
-            fig_radar = go.Figure()
-            for label in summary_norm.index:
-                data = summary_norm.loc[label]
-                fig_radar.add_trace(go.Scatterpolar(
-                    r=[data["Sales_Num"], data["Price_Num"],
-                       data["Rating_Num"], data["Issue_Num"]],
-                    theta=["销量特征", "定价策略", "内容评分", "连载长度"],
-                    fill="toself",
-                    name=label,
-                    marker=dict(color=CLUSTER_COLORS.get(label, "#888888")),
-                ))
-            fig_radar.update_layout(
-                polar=dict(radialaxis=dict(visible=False)),
-                showlegend=True, height=350, margin=dict(t=30, b=30),
-            )
-            st.plotly_chart(fig_radar, use_container_width=True)
+                st.markdown("#### 🕸️ 聚类中心多维雷达图")
+                fig_radar = go.Figure()
+                for label in summary_norm.index:
+                    data = summary_norm.loc[label]
+                    fig_radar.add_trace(go.Scatterpolar(
+                        r=[data["Sales_Num"], data["Price_Num"],
+                           data["Rating_Num"], data["Issue_Num"]],
+                        theta=["销量特征", "定价策略", "内容评分", "连载长度"],
+                        fill="toself",
+                        name=label,
+                        marker=dict(color=CLUSTER_COLORS.get(label, "#888888")),
+                    ))
+                fig_radar.update_layout(
+                    polar=dict(radialaxis=dict(visible=False)),
+                    showlegend=True, height=350, margin=dict(t=30, b=30),
+                )
+                st.plotly_chart(fig_radar, use_container_width=True)
 
-    # ── Tab B：散点图 ─────────────────────────────────────────────────────────
     with tab_b:
         c1, c2 = st.columns(2)
         axis_mode = c1.selectbox("📈 探索空间坐标轴", [
@@ -163,7 +144,6 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             "市场表现空间 (销量 vs 连载期)",
             "商业定位空间 (定价 vs 评分)",
         ])
-        # 只显示实际存在的标签
         existing_labels = [
             lbl for lbl in LABEL_ORDER
             if lbl in probe_df["Cluster_Label"].unique()
@@ -188,7 +168,6 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             if c in probe_df.columns
         ]
 
-        # 修复：使用明确的 dtype 和 loc 索引
         size_series = pd.Series(
             data=10.0,
             index=probe_df.index,
@@ -222,10 +201,7 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── 代表作检索卡片 ────────────────────────────────────────────────────────
     st.markdown("#### 🏆 簇群商业特征与代表作检索")
-
-    # 只显示实际存在的标签
     existing_labels = [lbl for lbl in LABEL_ORDER if lbl in probe_df["Cluster_Label"].unique()]
     n_labels = len(existing_labels)
     
@@ -241,7 +217,7 @@ def render_cluster_probe(probe_df: pd.DataFrame) -> None:
             top = _get_top_titles(probe_df, label)
             render_fn = getattr(col, style)
             render_fn(
-                f"**{icon} {label}**\\n\\n"
-                f"**商业特征**：{desc}\\n\\n"
-                f"**算法实时捕获代表作**：\\n{top}"
+                f"**{icon} {label}**\n\n"
+                f"**商业特征**：{desc}\n\n"
+                f"**算法实时捕获代表作**：\n{top}"
             )

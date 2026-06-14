@@ -9,19 +9,10 @@ from typing import cast
 
 from core.constants import LABEL_ORDER, YEAR_COLUMN_CANDIDATES, N_CLUSTERS
 
-
-def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
+def perform_advanced_clustering(df: pd.DataFrame, n_clusters: int = N_CLUSTERS) -> pd.DataFrame:
     """
     全局聚类主函数。
     仅在全量数据上执行一次，结果固化至 DataFrame 列，供所有下游 UI 使用。
-
-    新增列：
-        Cluster                  int   KMeans 原始簇编号
-        Cluster_Label            str   商业语义标签（保证无 NaN）
-        PCA1 / PCA2              float 降维坐标
-        Silhouette_Score         float 轮廓系数（全局常量列）
-        PCA_Explained_Variance   float PCA 方差解释率（全局常量列）
-        Sales_Num / Price_Num / Rating_Num / Issue_Num  float 归一前数值列
     """
     ml_df = df.copy()
 
@@ -29,9 +20,11 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     issue_text = (
         ml_df["Issue"] if "Issue" in ml_df.columns
         else pd.Series(["1"] * len(ml_df))
-    ).astype(str)
+    )
+    # 修复正则提取逻辑，确保安全提取数字
     ml_df["Issue_Num"] = (
-        issue_text.str.extract(r"(\\\\d+)")[0]
+        issue_text.astype(str)
+        .str.extract(r"(\d+)")[0]
         .fillna(-1)
         .astype(int)
     )
@@ -86,8 +79,9 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     X = StandardScaler().fit_transform(ml_df[features])
 
     # ── 8. 小样本保护 ──────────────────────────────────────────────────────────
-    n_clusters = min(N_CLUSTERS, len(ml_df))
-    if n_clusters < 2:
+    # 修复：动态采用传入的 n_clusters
+    actual_clusters = min(n_clusters, len(ml_df))
+    if actual_clusters < 2:
         ml_df["Cluster"]                = 0
         ml_df["Cluster_Label"]          = LABEL_ORDER[-1]   # Long Tail
         ml_df["Silhouette_Score"]       = 0.0
@@ -96,9 +90,9 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
         ml_df["PCA_Explained_Variance"] = 0.0
         return ml_df
 
-    # ── 9. KMeans（使用常量 N_CLUSTERS）───────────────────────────────────────
+    # ── 9. KMeans ─────────────────────────────────────────────────────────────
     kmeans = KMeans(
-        n_clusters=n_clusters, init="k-means++",
+        n_clusters=actual_clusters, init="k-means++",
         n_init=20, max_iter=500, random_state=42,
     )
     ml_df["Cluster"] = kmeans.fit_predict(X)
@@ -137,27 +131,24 @@ def perform_advanced_clustering(df: pd.DataFrame) -> pd.DataFrame:
     remaining = set(cluster_stats.index)
     mapping: dict[int, str] = {}
 
-    # 规则 1：Blockbuster = 高销量 + 高期数（持续主线 IP）
-    scores = norm["sales_mean"] * 0.6 + norm["issue_mean"] * 0.4
-    best = cast(int, scores[list(remaining)].idxmax())
-    mapping[best] = LABEL_ORDER[0]
-    remaining.discard(best)
+    if remaining:
+        scores = norm["sales_mean"] * 0.6 + norm["issue_mean"] * 0.4
+        best = cast(int, scores[list(remaining)].idxmax())
+        mapping[best] = LABEL_ORDER[0]
+        remaining.discard(best)
 
-    # 规则 2：Event = 高销量 + 低期数（#1 创刊号 / 联动爆发）
     if remaining:
         scores = norm["sales_mean"] * 0.7 - norm["issue_mean"] * 0.3
         best = cast(int, scores[list(remaining)].idxmax())
         mapping[best] = LABEL_ORDER[1]
         remaining.discard(best)
 
-    # 规则 3：Premium = 高价格 + 高评分（精品限定）
     if remaining:
         scores = norm["price_mean"] * 0.5 + norm["rating_mean"] * 0.5
         best = cast(int, scores[list(remaining)].idxmax())
         mapping[best] = LABEL_ORDER[2]
         remaining.discard(best)
 
-    # 规则 4：Long Tail = 最后剩余
     for cid in remaining:
         mapping[cid] = LABEL_ORDER[3]
 

@@ -26,14 +26,14 @@ def local_regex_router(question: str) -> dict[str, Any]:
         return {"module": "regression", "params": {}, "reason": "本地离线硬匹配：价格-销量回归分析模型"}
     if any(kw in q for kw in ["词云", "高频词", "关键字", "标题词"]):
         return {"module": "keyword", "params": {}, "reason": "本地离线硬匹配：核心词频深度分析"}
-    # 修复：将 "十年" 和 "年代" 放在 "前" 之前，避免被误拦截
     if any(kw in q for kw in ["十年", "年代", "经典", "2010"]):
         return {"module": "decade_top10", "params": {}, "reason": "本地离线硬匹配：黄金十年Top10里程碑"}
     if any(kw in q for kw in ["作者", "创作者", "编剧", "画家", "画师"]):
         return {"module": "creator_top", "params": {}, "reason": "本地离线硬匹配：核心创作者战绩榜单"}
-    # 修复：使用更精确的关键词，避免 "前" 单独匹配
+        
+    # 修复：采用更稳健的非捕获组正则，杜绝 top10/TOP10 的解析遗漏
     if any(kw in q for kw in ["排行", "最高", "top", "前10", "前20", "前50", "前100", "销量最高"]):
-        match = re.search(r'前?(\\d+)', q)
+        match = re.search(r"(?:top|前)\s*(\d+)", q, re.IGNORECASE)
         top_n = int(match.group(1)) if match else 10
         return {"module": "top_sales", "params": {"top_n": top_n}, "reason": "本地离线硬匹配：全局销量大排行"}
         
@@ -64,7 +64,7 @@ def route_question(question: str, df: pd.DataFrame, client: SiliconFlowClient) -
 务必只输出 JSON 格式：
 {"module": "模块名", "params": {"key": "value"}, "reason": "中文理由"}
 """
-    user_prompt = f"字段结构: {schema}\\n\\n用户提问: {question}"
+    user_prompt = f"字段结构: {schema}\n\n用户提问: {question}"
     
     try:
         return client.chat_json([
