@@ -28,7 +28,7 @@ def render_chat(filtered_df, api_key, model_name):
     col1, col2 = st.columns([8, 2])
     with col2:
         if st.button("🧹 清空对话", use_container_width=True):
-            # 优化点：使用 pop 替代 del，永远安全，杜绝 KeyError
+            # 使用 pop 替代 del，永远安全，杜绝 KeyError
             st.session_state.pop("messages", None)
             st.rerun()
 
@@ -94,7 +94,7 @@ def render_chat(filtered_df, api_key, model_name):
     st.divider()
     
     if REPORTLAB_AVAILABLE:
-        # 优化点：导出前构造轻量级 JSON，彻底剥离 Figure 和 DataFrame 对象，防止序列化爆炸
+        # 导出前构造轻量级 JSON，彻底剥离 Figure 和 DataFrame 对象，防止序列化爆炸
         export_messages = [
             {"role": msg["role"], "content": msg["content"]} 
             for msg in st.session_state.messages
